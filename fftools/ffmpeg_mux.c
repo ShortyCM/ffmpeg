@@ -22,6 +22,7 @@
 
 #include "ffmpeg.h"
 #include "ffmpeg_mux.h"
+#include "ffmpeg_vmaf.h"
 #include "ffmpeg_utils.h"
 #include "sync_queue.h"
 
@@ -226,6 +227,18 @@ static int write_packet(Muxer *mux, OutputStream *ost, AVPacket *pkt)
         goto fail;
 
     ms->data_size_mux += pkt->size;
+#if CONFIG_LIBVMAF
+    if (ost->type == AVMEDIA_TYPE_VIDEO && ost->target_vmaf_state) {
+        int vret = ff_target_vmaf_process_packet(ost, pkt);
+        if (vret < 0) {
+            av_log(ost, AV_LOG_WARNING,
+                   "target VMAF tracking failed for this packet: %s\n",
+                   av_err2str(vret));
+            if (exit_on_error)
+                return vret;
+        }
+    }
+#endif
     frame_num = atomic_fetch_add(&ost->packets_written, 1);
 
     pkt->stream_index = ost->index;
@@ -743,15 +756,27 @@ static void mux_final_stats(Muxer *mux)
                  100.0 * (file_size - total_size) / total_size);
     }
 
-    av_log(of, AV_LOG_INFO,
-           "video:%1.0fKiB audio:%1.0fKiB subtitle:%1.0fKiB other streams:%1.0fKiB "
-           "global headers:%1.0fKiB muxing overhead: %s\n",
-           video_size    / 1024.0,
-           audio_size    / 1024.0,
-           subtitle_size / 1024.0,
-           other_size    / 1024.0,
-           extra_size    / 1024.0,
-           overhead);
+        av_log(of, AV_LOG_INFO,
+               "video:%1.0fKiB audio:%1.0fKiB subtitle:%1.0fKiB other streams:%1.0fKiB "
+               "global headers:%1.0fKiB muxing overhead: %s\n",
+               video_size    / 1024.0,
+               audio_size    / 1024.0,
+               subtitle_size / 1024.0,
+               other_size    / 1024.0,
+               extra_size    / 1024.0,
+               overhead);
+#if CONFIG_LIBVMAF
+        for (int j = 0; j < of->nb_streams; j++) {
+            OutputStream *ost = of->streams[j];
+            if (ost->type == AVMEDIA_TYPE_VIDEO && ost->target_vmaf_state) {
+                av_log(of, AV_LOG_INFO,
+                       "  target_vmaf %.2f achieved %.2f (q=%.2f)\n",
+                       ost->target_vmaf,
+                       ost->target_vmaf_score,
+                       ost->target_vmaf_qscale);
+            }
+        }
+#endif
 }
 
 int of_write_trailer(OutputFile *of)
@@ -765,6 +790,17 @@ int of_write_trailer(OutputFile *of)
                "Nothing was written into output file, because "
                "at least one of its streams received no packets.\n");
         return AVERROR(EINVAL);
+    }
+
+    for (int i = 0; i < of->nb_streams; i++) {
+#if CONFIG_LIBVMAF
+        OutputStream *ost = of->streams[i];
+        if (ost->type == AVMEDIA_TYPE_VIDEO && ost->target_vmaf_state) {
+            int vret = ff_target_vmaf_finalize(ost);
+            if (vret < 0)
+                mux_result = err_merge(mux_result, vret);
+        }
+#endif
     }
 
     ret = av_write_trailer(fc);
@@ -811,6 +847,11 @@ static void ost_free(OutputStream **post)
     if (!ost)
         return;
     ms = ms_from_ost(ost);
+
+#if CONFIG_LIBVMAF
+    if (ost->target_vmaf_state)
+        ff_target_vmaf_uninit(ost);
+#endif
 
     enc_free(&ost->enc);
     fg_free(&ost->fg_simple);

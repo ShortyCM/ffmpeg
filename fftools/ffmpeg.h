@@ -141,6 +141,8 @@ typedef struct StreamMap {
     ViewSpecifier vs;
 } StreamMap;
 
+struct TargetVMAFState;
+
 typedef struct OptionsContext {
     OptionGroup *g;
 
@@ -158,6 +160,7 @@ typedef struct OptionsContext {
     SpecifierOptList max_frame_rates;
     SpecifierOptList frame_sizes;
     SpecifierOptList frame_pix_fmts;
+    SpecifierOptList target_vmaf;
 
     /* input options */
     int64_t input_ts_offset;
@@ -659,6 +662,10 @@ typedef struct OutputStream {
      * subtitles utilizing fix_sub_duration at random access points.
      */
     unsigned int fix_sub_duration_heartbeat;
+    double target_vmaf;
+    double target_vmaf_score;
+    double target_vmaf_qscale;
+    struct TargetVMAFState *target_vmaf_state;
 } OutputStream;
 
 typedef struct OutputFile {

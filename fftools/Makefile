@@ -20,6 +20,7 @@ OBJS-ffmpeg +=                  \
     fftools/ffmpeg_mux.o        \
     fftools/ffmpeg_mux_init.o   \
     fftools/ffmpeg_opt.o        \
+    fftools/ffmpeg_vmaf.o       \
     fftools/ffmpeg_sched.o      \
     fftools/graph/graphprint.o        \
     fftools/sync_queue.o        \

@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <errno.h>
 #include <string.h>
 
 #include "cmdutils.h"
@@ -761,6 +762,22 @@ static int new_stream_video(Muxer *mux, const OptionsContext *o,
         opt_match_per_stream_int(ost, &o->top_field_first, oc, st, &ost->top_field_first);
         if (ost->top_field_first >= 0)
             av_log(ost, AV_LOG_WARNING, "-top is deprecated, use the setfield filter instead\n");
+#endif
+#if CONFIG_LIBVMAF
+        ost->target_vmaf        = -1.0;
+        ost->target_vmaf_score  = -1.0;
+        ost->target_vmaf_qscale = 0.0;
+        opt_match_per_stream_dbl(ost, &o->target_vmaf, oc, st, &ost->target_vmaf);
+#else
+        {
+            double target_vmaf = -1.0;
+            opt_match_per_stream_dbl(ost, &o->target_vmaf, oc, st, &target_vmaf);
+            if (target_vmaf >= 0.0) {
+                av_log(ost, AV_LOG_ERROR,
+                       "-target_vmaf requested but libvmaf support is not built in.\n");
+                return AVERROR(ENOSYS);
+            }
+        }
 #endif
 
 #if FFMPEG_OPT_VSYNC
