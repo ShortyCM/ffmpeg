@@ -224,41 +224,15 @@ static int target_vmaf_receive(OutputStream *ost, TargetVMAFState *s)
 static int target_vmaf_send(OutputStream *ost, TargetVMAFState *s,
                              const AVPacket *pkt)
 {
-    AVPacket *tmp = NULL;
     int ret;
 
-    if (pkt) {
-        tmp = av_packet_alloc();
-        if (!tmp)
-            return AVERROR(ENOMEM);
-        ret = av_packet_ref(tmp, pkt);
-        if (ret < 0) {
-            av_packet_free(&tmp);
-            return ret;
-        }
-    }
-
-    ret = avcodec_send_packet(s->dec_ctx, tmp);
-    av_packet_free(&tmp);
+    ret = avcodec_send_packet(s->dec_ctx, pkt);
 
     if (ret == AVERROR(EAGAIN)) {
         ret = target_vmaf_receive(ost, s);
         if (ret < 0 && ret != AVERROR_EOF)
             return ret;
-
-        if (pkt) {
-            tmp = av_packet_alloc();
-            if (!tmp)
-                return AVERROR(ENOMEM);
-            ret = av_packet_ref(tmp, pkt);
-            if (ret < 0) {
-                av_packet_free(&tmp);
-                return ret;
-            }
-        }
-
-        ret = avcodec_send_packet(s->dec_ctx, tmp);
-        av_packet_free(&tmp);
+        ret = avcodec_send_packet(s->dec_ctx, pkt);
     }
 
     if (ret == AVERROR_EOF)
@@ -269,7 +243,7 @@ static int target_vmaf_send(OutputStream *ost, TargetVMAFState *s,
 
 int ff_target_vmaf_init(OutputStream *ost)
 {
-    TargetVMAFState *s;
+    TargetVMAFState *s = NULL;
     const AVCodec *dec;
     VmafConfiguration cfg = {
         .log_level  = VMAF_LOG_LEVEL_WARNING,
@@ -280,7 +254,8 @@ int ff_target_vmaf_init(OutputStream *ost)
         .name  = "vmaf",
         .flags = VMAF_MODEL_FLAG_ENABLE_TRANSFORM,
     };
-    int ret;
+    AVCodecParameters *par = NULL;
+    int ret = 0;
 
     if (ost->target_vmaf < 0.0)
         return 0;
@@ -300,8 +275,8 @@ int ff_target_vmaf_init(OutputStream *ost)
 
     s->ref_fifo = av_fifo_alloc2(32, sizeof(AVFrame*), AV_FIFO_FLAG_AUTO_GROW);
     if (!s->ref_fifo) {
-        av_free(s);
-        return AVERROR(ENOMEM);
+        ret = AVERROR(ENOMEM);
+        goto fail;
     }
 
     dec = avcodec_find_decoder(ost->enc->enc_ctx->codec_id);
@@ -309,83 +284,60 @@ int ff_target_vmaf_init(OutputStream *ost)
         av_log(ost, AV_LOG_ERROR,
                "target VMAF controller requires a decoder for %s\n",
                avcodec_get_name(ost->enc->enc_ctx->codec_id));
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR_DECODER_NOT_FOUND;
+        ret = AVERROR_DECODER_NOT_FOUND;
+        goto fail;
     }
 
     s->dec_ctx = avcodec_alloc_context3(dec);
     if (!s->dec_ctx) {
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR(ENOMEM);
+        ret = AVERROR(ENOMEM);
+        goto fail;
     }
 
-    AVCodecParameters *par = avcodec_parameters_alloc();
+    par = avcodec_parameters_alloc();
     if (!par) {
-        avcodec_free_context(&s->dec_ctx);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR(ENOMEM);
+        ret = AVERROR(ENOMEM);
+        goto fail;
     }
 
     ret = avcodec_parameters_from_context(par, ost->enc->enc_ctx);
-    if (!ret)
-        ret = avcodec_parameters_to_context(s->dec_ctx, par);
+    if (ret < 0)
+        goto fail;
+
+    ret = avcodec_parameters_to_context(s->dec_ctx, par);
+    if (ret < 0)
+        goto fail;
+
     avcodec_parameters_free(&par);
-    if (ret < 0) {
-        avcodec_free_context(&s->dec_ctx);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return ret;
-    }
 
     s->dec_ctx->pkt_timebase = ost->enc->enc_ctx->time_base;
 
     ret = avcodec_open2(s->dec_ctx, dec, NULL);
-    if (ret < 0) {
-        avcodec_free_context(&s->dec_ctx);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return ret;
-    }
+    if (ret < 0)
+        goto fail;
 
     s->dec_frame = av_frame_alloc();
     if (!s->dec_frame) {
-        avcodec_free_context(&s->dec_ctx);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR(ENOMEM);
+        ret = AVERROR(ENOMEM);
+        goto fail;
     }
 
     ret = vmaf_init(&s->vmaf, cfg);
     if (ret) {
-        avcodec_free_context(&s->dec_ctx);
-        av_frame_free(&s->dec_frame);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR(EINVAL);
+        ret = AVERROR(EINVAL);
+        goto fail;
     }
 
     ret = vmaf_model_load(&s->model, &model_cfg, "vmaf_v0.6.1");
     if (ret) {
-        vmaf_close(s->vmaf);
-        avcodec_free_context(&s->dec_ctx);
-        av_frame_free(&s->dec_frame);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR(EINVAL);
+        ret = AVERROR(EINVAL);
+        goto fail;
     }
 
     ret = vmaf_use_features_from_model(s->vmaf, s->model);
     if (ret) {
-        vmaf_model_destroy(s->model);
-        vmaf_close(s->vmaf);
-        avcodec_free_context(&s->dec_ctx);
-        av_frame_free(&s->dec_frame);
-        target_vmaf_free_fifo(s);
-        av_free(s);
-        return AVERROR(EINVAL);
+        ret = AVERROR(EINVAL);
+        goto fail;
     }
 
     ost->enc->enc_ctx->flags |= AV_CODEC_FLAG_QSCALE;
@@ -398,6 +350,20 @@ int ff_target_vmaf_init(OutputStream *ost)
            "target VMAF controller enabled (goal=%.2f).\n", s->target);
 
     return 0;
+
+fail:
+    avcodec_parameters_free(&par);
+    if (s) {
+        if (s->model)
+            vmaf_model_destroy(s->model);
+        if (s->vmaf)
+            vmaf_close(s->vmaf);
+        av_frame_free(&s->dec_frame);
+        avcodec_free_context(&s->dec_ctx);
+        target_vmaf_free_fifo(s);
+        av_free(s);
+    }
+    return ret;
 }
 
 int ff_target_vmaf_store_frame(OutputStream *ost, const AVFrame *frame)
