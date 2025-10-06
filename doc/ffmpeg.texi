@@ -1606,6 +1606,16 @@ filter the stream.
 
 This is an alias for @code{-filter:v}, see the @ref{filter_option,,-filter option}.
 
+@item -target_vmaf @var{score} (@emph{output})
+Encode video while adaptively adjusting the encoder quality in order to
+approach the requested @var{score} on the VMAF quality scale.
+This option requires FFmpeg to be built with @option{--enable-libvmaf}; it
+operates by decoding the encoded output internally, computing VMAF against the
+original frames, and iteratively steering the encoder towards the desired
+score. The current implementation assumes a software encoder that honors
+@code{AV_CODEC_FLAG_QSCALE} and therefore may not be effective with every
+codec or rate control mode.
+
 @item -autorotate
 Automatically rotate the video according to file metadata. Enabled by
 default, use @option{-noautorotate} to disable it.

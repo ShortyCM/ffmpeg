@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "ffmpeg.h"
+#include "ffmpeg_vmaf.h"
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
@@ -370,6 +371,14 @@ int enc_open(void *opaque, const AVFrame *frame)
     ret = of_stream_init(of, ost, enc_ctx);
     if (ret < 0)
         return ret;
+
+#if CONFIG_LIBVMAF
+    if (ost->target_vmaf >= 0.0) {
+        ret = ff_target_vmaf_init(ost);
+        if (ret < 0)
+            return ret;
+    }
+#endif
 
     return frame_samples;
 }
@@ -791,6 +800,7 @@ static int frame_encode(OutputStream *ost, AVFrame *frame, AVPacket *pkt)
     Encoder *e = ost->enc;
     OutputFile *of = ost->file;
     enum AVMediaType type = ost->type;
+    int ret = 0;
 
     if (type == AVMEDIA_TYPE_SUBTITLE) {
         const AVSubtitle *subtitle = frame && frame->buf[0] ?
@@ -813,6 +823,13 @@ static int frame_encode(OutputStream *ost, AVFrame *frame, AVPacket *pkt)
             if (ost->top_field_first >= 0) {
                 frame->flags &= ~AV_FRAME_FLAG_TOP_FIELD_FIRST;
                 frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST * (!!ost->top_field_first);
+            }
+#endif
+#if CONFIG_LIBVMAF
+            if (ost->target_vmaf_state) {
+                ret = ff_target_vmaf_store_frame(ost, frame);
+                if (ret < 0)
+                    return ret;
             }
 #endif
         } else {
